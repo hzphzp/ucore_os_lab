@@ -1,6 +1,6 @@
-# 第一步： 分析makefile
+# 实验前的准备
 
-## makefile的结构：  
+## 观察makefile的结构：  
 1～138行：定义各种变量/函数，设置参数，进行准备工作。  
 140~153行：生成bin/kernel  
 155~170行：生成bin/bootblock  
@@ -118,7 +118,111 @@ CC		:= $(GCCPREFIX)gcc-4.9
 </code>
 
 再次运行make clean 和 make  
-success!
+success! 
+现在实验环境已经就绪
 
+
+# 练习1 理解通过make生成执行文件的过程
+
+## 第一题 一个被系统认为是符合规范的硬盘主引导扇区的特征是什么?
+
+## 使用make "V=" 命令的打印结果了解make编译的大致过程
+这里使用的是make "V=" 命令，将这里的编译过程全部在终端中展示出来 如图所示  
+![image](make_v_1.png)
+![image](make_v_2.png)
+![image](make_v_3.png)
+
+### 第一步， gcc编译出一系列bin/kernel所需要的目标文件
+obj/kern/init/init.o   
+obj/kern/init/init.o   
+obj/kern/libs/readline.o   
+obj/kern/debug/panic.o   
+obj/kern/debug/kdebug.o  
+obj/kern/debug/kmonitor.o   
+obj/kern/driver/clock.o   
+obj/kern/driver/console.o   
+obj/kern/driver/picirq.o   
+obj/kern/driver/intr.o   
+obj/kern/trap/trap.o   
+obj/kern/trap/vectors.o    
+obj/kern/trap/trapentry.o   
+obj/kern/mm/pmm.o   
+obj/libs/string.o    
+obj/libs/printfmt.o   
+
+### 第二步, 生成 bin/kernel
+使用ld命令，将这些之前生成的目标文件，链接成可执行文件, 即之后要用到的 bin/kernel
+
+    ld -m    elf_i386 -nostdlib -T tools/kernel.ld -o bin/kernel  obj/kern/init/init.o obj/kern/libs/stdio.o obj/kern/libs/readline.o obj/kern/debug/panic.o obj/kern/debug/kdebug.o obj/kern/debug/kmonitor.o obj/kern/driver/clock.o obj/kern/driver/console.o obj/kern/driver/picirq.o obj/kern/driver/intr.o obj/kern/trap/trap.o obj/kern/trap/vectors.o obj/kern/trap/trapentry.o obj/kern/mm/pmm.o  obj/libs/string.o obj/libs/printfmt.o
+
+
+### 第三步, 编译出 bin/bootblock 所需要的目标文件
+obj/boot/bootasm.o  
+obj/boot/bootmain.o   
+obj/sign/tools/sign.o   
+
+### 第四步, 将上面的目标文件编译成 bin/bootblock 可执行文件
+
+    ld -m    elf_i386 -nostdlib -N -e start -Ttext 0x7C00 obj/boot/bootasm.o obj/boot/bootmain.o -o obj/bootblock.o
+
+### 第五步, 将第三步中产生的sign.o链接成sign可执行文件
+
+
+现在一共有bin/kernel, obj/sign/tools/sign, obj/bootblock.out 这三个可执行文件。  
+
+这里这个bootblock.out 的文件大小为468 Bytes  
+build 512 bytes boot sector: 'bin/bootblock' success!  
+从这句话中可以看出经过一些程序，生成了一个512 Bytes的可执行文件。  
+### 第六步, 生成ucore.img 镜像文件    
+
+我们可以看到Makefile文件中有这样一段code  
+
+    UCOREIMG	:= $(call totarget,ucore.img)
+
+    $(UCOREIMG): $(kernel) $(bootblock)
+        $(V)dd if=/dev/zero of=$@ count=10000
+        $(V)dd if=$(bootblock) of=$@ conv=notrunc
+        $(V)dd if=$(kernel) of=$@ seek=1 conv=notrunc
+
+    $(call create_target,ucore.img)
+
+对应make "V=" 的打印结果  
+
+    dd if=/dev/zero of=bin/ucore.img count=10000
+    10000+0 records in
+    10000+0 records out
+    5120000 bytes (5.1 MB, 4.9 MiB) copied, 0.0222739 s, 230 MB/s
+    dd if=bin/bootblock of=bin/ucore.img conv=notrunc
+    1+0 records in
+    1+0 records out
+    512 bytes copied, 8.632e-05 s, 5.9 MB/s
+    dd if=bin/kernel of=bin/ucore.img seek=1 conv=notrunc
+    138+1 records in
+    138+1 records out
+    70780 bytes (71 kB, 69 KiB) copied, 0.00040367 s, 175 MB/s
+
+linux dd命令用于读取、转换并输出数据。
+
+dd可从标准输入或文件中读取数据，根据指定的格式来转换数据，再输出到文件、设备或标准输出。
+
+if=文件名：输入文件名，缺省为标准输入。即指定源文件。  
+of=文件名：输出文件名，缺省为标准输出。即指定目的文件。  
+count=blocks：仅拷贝blocks个块，块大小等于ibs指定的字节数。  
+conv=notrunc:表示不截短输出文件  
+
+这里的操作就是:  
+先用10000block的0来初始化ucore.img, 将bootblock和kernel加入进去, 调用create_target 来生成ucore.img文件. 
+
+
+## 第二题 一个被系统认为是符合规范的硬盘主引导扇区的特征是什么?
+
+这里我们可以从sign.c这个文件中的看出答案
+
+![image](sign_c.png)
+
+主引导扇区在磁盘的 0 磁头 0 柱面 1 扇面, 包括硬盘主引导记录MBR(Master Boot Recode) 和分区表DPT(Disk Patition Table). 规范的主引导扇区特征如下:
+1. 总大小为512字节, 由启动程序 分区表 和结束符号组成.
+2. 最后由一个0x55和一个0xAA表示 启动区的结束字符
+3. 由不超过466字节的启动代码和不超过64字节的硬盘分区表加上两个字节的结束符组成
 
 
